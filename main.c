@@ -138,7 +138,7 @@ int main(void) {
 
 	for (int i = 0; i < images_length; ++i) {
 		char filename[255];
-		snprintf(filename, sizeof(filename), "weight_%d.bmp", i + 1);
+		snprintf(filename, sizeof(filename), "weights/weight_%d.bmp", i + 1);
 		output_bmp_data(filename, images[i].weight, images[i].w, images[i].h);
 	}
 

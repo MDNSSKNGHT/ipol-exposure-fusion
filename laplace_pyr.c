@@ -4,6 +4,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#define DEBUG 1
 #define MIN(x, y) ((x) > (y) ? (y) : (x))
 #define MAX(x, y) ((x) > (y) ? (y) : (x))
 
@@ -148,6 +149,7 @@ static void upsample(image_t *out, image_t *in, int odd_w, int odd_h)
    convolve(u.data, &u_inter, 0, 5, G);
    convolve(u.data, &u_inter, 1, 5, G);
    convolve(u.data, &u_inter, 2, 5, G);
+   free(u_inter.data);
    empty_image(out, u.width - 4 + odd_w, u.height - 4 + odd_h, u.comp);
    for (int y = 2; y < u.height && y - 2 < out->height; ++y) {
       for (int x = 2; x < u.width && x - 2 < out->width; ++x) {
@@ -178,10 +180,13 @@ static void output_bmp(const char *filename, image_t *image)
       if (max < image->data[i])
          max = image->data[i];
    }
-   // printf("%s: (%f %f)\n", filename, min, max);
+   float range = max - min;
+#ifdef DEBUG
+   printf("%s: (%f %f %f)\n", filename, min, max, range);
+#endif
    unsigned char *out = malloc(image->size);
    for (int i = 0; i < image->size; ++i)
-      out[i] = saturate_cast_u8(image->data[i] * 255.0f);
+      out[i] = saturate_cast_u8((image->data[i] - min) / range * 255.0f);
    stbi_write_bmp(filename, image->width, image->height, image->comp, out);
    free(out);
 }
@@ -190,21 +195,37 @@ int main(void)
 {
    image_t image;
    load_image(&image, "images/D.jpg");
+   int levels = 4;
    pyramid_t gaussian;
-   gaussian.levels = 4;
-   gaussian.images = calloc(gaussian.levels, sizeof(image_t));
+   gaussian.images = calloc(levels, sizeof(image_t));
    gaussian.images[0] = image;
-   for (int l = 1; l < gaussian.levels; ++l)
+   for (int l = 1; l < levels; ++l)
       downsample(gaussian.images + l, gaussian.images + l - 1);
-
-   image_t up;
-   upsample(&up, gaussian.images + 1, 0, 0);
-   output_bmp("upsample.jpg", &up);
-   // for (int l = 1; l < levels; ++l) {
-   //    downsample(&gaussian.images[l], &gaussian.images[l - 1]);
-   //    char filename[255];
-   //    snprintf(filename, sizeof(filename), "gauss_%d.bmp", l);
-   //    output_bmp(filename, &gaussian.images[l]);
-   // }
+   pyramid_t laplacian;
+   laplacian.images = calloc(levels, sizeof(image_t));
+   laplacian.images[levels - 1] = gaussian.images[levels - 1];
+   for (int l = 0; l < levels - 1; ++l) {
+      image_t inter;
+      int odd_w = gaussian.images[l].width % 2;
+      int odd_h = gaussian.images[l].height % 2;
+      upsample(&inter, gaussian.images + l + 1, odd_w, odd_h);
+      empty_image(laplacian.images + l, inter.width, inter.height, inter.comp);
+      printf("%d\n", laplacian.images[l].size);
+      for (int i = 0; i < laplacian.images[l].size; ++i)
+         laplacian.images[l].data[i] = gaussian.images[l].data[i] - inter.data[i];
+      free(inter.data);
+   }
+#ifdef DEBUG
+   for (int l = 0; l < levels; ++l) {
+      char filename[255];
+      snprintf(filename, sizeof(filename), "gaussian_%d.bmp", l);
+      output_bmp(filename, &gaussian.images[l]);
+   }
+   for (int l = 0; l < levels; ++l) {
+      char filename[255];
+      snprintf(filename, sizeof(filename), "laplacian_%d.bmp", l);
+      output_bmp(filename, &laplacian.images[l]);
+   }
+#endif
    free(image.data);
 }

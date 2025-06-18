@@ -17,8 +17,6 @@ typedef struct {
    int comp;
    int size;
    float *data;
-   struct pyramid_t *G_py;
-   struct pyramid_t *L_py;
 } image_t;
 
 typedef struct pyramid_t {
@@ -271,36 +269,40 @@ static void upsample(image_t *out, image_t *in, int odd_w, int odd_h)
    free(u.data);
 }
 
-static void build_pyramid(pyramid_t **out, image_t *in, int levels, int type)
+static void build_pyramid(pyramid_t *out, image_t *in, int levels, int type)
 {
-   pyramid_t *gaussian = malloc(sizeof(pyramid_t));
-   gaussian->levels = levels;
-   gaussian->images = calloc(levels, sizeof(image_t));
-   copy_image(gaussian->images + 0, in);
+   // pyramid_t *gaussian = malloc(sizeof(pyramid_t));
+   pyramid_t gaussian;
+   gaussian.levels = levels;
+   gaussian.images = calloc(levels, sizeof(image_t));
+   copy_image(gaussian.images + 0, in);
    for (int l = 1; l < levels; ++l)
-      downsample(gaussian->images + l, gaussian->images + l - 1);
+      downsample(gaussian.images + l, gaussian.images + l - 1);
    if (type == G_PYRAMID) {
-      *out = gaussian;
+      out->levels = levels;
+      out->type = type;
+      out->images = gaussian.images;
    }
    if (type == L_PYRAMID) {
-      pyramid_t *laplacian = malloc(sizeof(pyramid_t));
-      laplacian->levels = levels;
-      laplacian->images = calloc(levels, sizeof(image_t));
-      copy_image(laplacian->images + levels - 1, gaussian->images + levels - 1);
+      pyramid_t laplacian;
+      laplacian.levels = levels;
+      laplacian.images = calloc(levels, sizeof(image_t));
+      copy_image(laplacian.images + levels - 1, gaussian.images + levels - 1);
       for (int l = 0; l < levels - 1; ++l) {
          image_t inter;
-         int odd_w = gaussian->images[l].width % 2;
-         int odd_h = gaussian->images[l].height % 2;
-         upsample(&inter, gaussian->images + l + 1, odd_w, odd_h);
-         empty_image(laplacian->images + l, inter.width, inter.height, inter.comp);
-         for (int i = 0; i < laplacian->images[l].size; ++i)
-            laplacian->images[l].data[i] = gaussian->images[l].data[i] - inter.data[i];
+         int odd_w = gaussian.images[l].width % 2;
+         int odd_h = gaussian.images[l].height % 2;
+         upsample(&inter, gaussian.images + l + 1, odd_w, odd_h);
+         empty_image(laplacian.images + l, inter.width, inter.height, inter.comp);
+         for (int i = 0; i < laplacian.images[l].size; ++i)
+            laplacian.images[l].data[i] = gaussian.images[l].data[i] - inter.data[i];
          free(inter.data);
       }
       for (int i = 0; i < levels; ++i)
-         free(gaussian->images[i].data);
-      free(gaussian);
-      *out = laplacian;
+         free(gaussian.images[i].data);
+      out->levels = levels;
+      out->type = type;
+      out->images = laplacian.images;
    }
 }
 
@@ -308,7 +310,6 @@ static void destroy_pyramid(pyramid_t *pyramid)
 {
    for (int i = 0; i < pyramid->levels; ++i)
       free(pyramid->images[i].data);
-   free(pyramid);
 }
 
 static unsigned char saturate_cast_u8(float in)
@@ -344,10 +345,13 @@ static void output_bmp(const char *filename, image_t *image)
 int main(void)
 {
    image_t images[inputs_length];
+   pyramid_t images_L_py[inputs_length];
+   pyramid_t weight_G_py[inputs_length];
    float *weights_data[inputs_length];
+   int levels = 4;
    for (int i = 0; i < inputs_length; ++i) {
       load_image(images + i, inputs_path[i]);
-      build_pyramid(&images[i].L_py, images + 0, 4, L_PYRAMID);
+      build_pyramid(images_L_py + i, images + i, levels, L_PYRAMID);
       image_t gray;
       cvt_grayscale(&gray, images + i);
       weights_data[i] = malloc(sizeof(float) * gray.size);
@@ -364,13 +368,51 @@ int main(void)
       weights[i].comp = 1;
       weights[i].size = first->width * first->height;
       weights[i].data = weights_data[i];
-      build_pyramid(&weights[i].G_py, images + 0, 4, G_PYRAMID);
+      build_pyramid(weight_G_py + i, weights + i, levels, G_PYRAMID);
 #ifdef DEBUG
       char filename[255];
       snprintf(filename, sizeof(filename), "weight_%d.bmp", i);
       output_bmp(filename, weights + i);
 #endif
    }
+   // for (int l = 0; l < weight_G_py[3].levels; ++l) {
+   //    char filename[255];
+   //    snprintf(filename, sizeof(filename), "gaussian_%d.bmp", l);
+   //    output_bmp(filename, weight_G_py[3].images + l);
+   // }
+   pyramid_t L_v;
+   L_v.levels = levels;
+   L_v.images = calloc(L_v.levels, sizeof(image_t));
+   L_v.type = L_PYRAMID;
+   for (int l = 0; l < L_v.levels; ++l) {
+      image_t *v_l = L_v.images + l;
+      empty_image(v_l, images_L_py[0].images[l].width, images_L_py[0].images[l].height, 3);
+      for (int k = 0; k < inputs_length; ++k) {
+         for (int i = 0; i < v_l->size; ++i)
+            v_l->data[i] += weight_G_py[k].images[l].data[i / 3] * images_L_py[k].images[l].data[i];
+      }
+   }
+   for (int l = 0; l < levels; ++l) {
+      destroy_pyramid(images_L_py + l);
+      destroy_pyramid(weight_G_py + l);
+   }
+   for (int l = 0; l < levels; ++l) {
+      char filename[255];
+      snprintf(filename, sizeof(filename), "blend_%d.bmp", l);
+      output_bmp(filename, L_v.images + l);
+   }
+   for (int l = levels - 1; l > 0; --l) {
+      image_t up;
+      int odd_w = L_v.images[l - 1].width - 2 * L_v.images[l].width;
+      int odd_h = L_v.images[l - 1].height - 2 * L_v.images[l].height;
+      upsample(&up, L_v.images + l, odd_w, odd_h);
+      for (int i = 0; i < L_v.images[l - 1].size; ++i)
+         L_v.images[l - 1].data[i] += up.data[i];
+   }
+   output_bmp("reconstructed.bmp", L_v.images + 0);
+   // for (int l = levels - 1; l >= 0; --l) {
+   //    int odd_w = L_v.images[l].height - 2 * 
+   // }
 #ifdef DEBUG
    for (int l = 0; l < G_py->levels; ++l) {
       char filename[255];

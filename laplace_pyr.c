@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -21,7 +22,10 @@ typedef struct {
 typedef struct {
    image_t *images;
    int levels;
+   int type;
 } pyramid_t;
+
+enum { G_PYRAMID, L_PYRAMID };
 
 static const char *inputs_path[] = {
    "images/A.jpg",
@@ -81,6 +85,16 @@ static void empty_image(image_t *in, int width, int height, int comp)
    in->comp = comp;
    in->size = width * height * comp;
    in->data = (float *)calloc(in->size, sizeof(float));
+}
+
+static void copy_image(image_t *out, image_t *in)
+{
+   out->width = in->width;
+   out->height = in->height;
+   out->comp = in->comp;
+   out->size = in->size;
+   out->data = (float *)malloc(sizeof(float) * out->size);
+   memcpy(out->data, in->data, sizeof(float) * out->size);
 }
 
 static void convolve(float *out, image_t *in, int off, int dim,
@@ -253,6 +267,47 @@ static void upsample(image_t *out, image_t *in, int odd_w, int odd_h)
    free(u.data);
 }
 
+static void build_pyramid(pyramid_t **out, image_t *in, int levels, int type)
+{
+   pyramid_t *gaussian = malloc(sizeof(pyramid_t));
+   gaussian->levels = levels;
+   gaussian->images = calloc(levels, sizeof(image_t));
+   copy_image(gaussian->images + 0, in);
+   for (int l = 1; l < levels; ++l)
+      downsample(gaussian->images + l, gaussian->images + l - 1);
+   if (type == G_PYRAMID) {
+      *out = gaussian;
+   }
+   if (type == L_PYRAMID) {
+      pyramid_t *laplacian = malloc(sizeof(pyramid_t));
+      laplacian->levels = levels;
+      laplacian->images = calloc(levels, sizeof(image_t));
+      copy_image(laplacian->images + levels - 1, gaussian->images + levels - 1);
+      for (int l = 0; l < levels - 1; ++l) {
+         image_t inter;
+         int odd_w = gaussian->images[l].width % 2;
+         int odd_h = gaussian->images[l].height % 2;
+         upsample(&inter, gaussian->images + l + 1, odd_w, odd_h);
+         empty_image(laplacian->images + l, inter.width, inter.height, inter.comp);
+         printf("%d\n", laplacian->images[l].size);
+         for (int i = 0; i < laplacian->images[l].size; ++i)
+            laplacian->images[l].data[i] = gaussian->images[l].data[i] - inter.data[i];
+         free(inter.data);
+      }
+      for (int i = 0; i < levels; ++i)
+         free(gaussian->images[i].data);
+      free(gaussian);
+      *out = laplacian;
+   }
+}
+
+// static void destroy_pyramid(pyramid_t *pyramid)
+// {
+//    for (int i = 0; i < pyramid->levels; ++i)
+//       free(pyramid->images[i].data);
+//    free(pyramid);
+// }
+
 static unsigned char saturate_cast_u8(float in)
 {
    if (in < 0.0f)
@@ -308,48 +363,19 @@ int main(void)
       weight.data = weights[i];
       output_bmp(filename, &weight);
    }
+   pyramid_t *G_py;
+   pyramid_t *L_py;
+   build_pyramid(&G_py, images + 0, 4, G_PYRAMID);
+   build_pyramid(&L_py, images + 0, 4, L_PYRAMID);
 
-   // image_t image;
-   // load_image(&image, "images/D.jpg");
-   // image_t gray;
-   // cvt_grayscale(&gray, &image);
-   // float *weight = malloc(sizeof(float) * gray.size);
-   // calculate_weight(weight, &image, &gray);
-   // gray.data = weight;
-   // output_bmp("weight.bmp", &gray);
-   //
-   //
-   // int levels = 4;
-   // pyramid_t gaussian;
-   // gaussian.images = calloc(levels, sizeof(image_t));
-   // gaussian.images[0] = image;
-   // for (int l = 1; l < levels; ++l)
-   //    downsample(gaussian.images + l, gaussian.images + l - 1);
-   // pyramid_t laplacian;
-   // laplacian.images = calloc(levels, sizeof(image_t));
-   // laplacian.images[levels - 1] = gaussian.images[levels - 1];
-   // for (int l = 0; l < levels - 1; ++l) {
-   //    image_t inter;
-   //    int odd_w = gaussian.images[l].width % 2;
-   //    int odd_h = gaussian.images[l].height % 2;
-   //    upsample(&inter, gaussian.images + l + 1, odd_w, odd_h);
-   //    empty_image(laplacian.images + l, inter.width, inter.height, inter.comp);
-   //    printf("%d\n", laplacian.images[l].size);
-   //    for (int i = 0; i < laplacian.images[l].size; ++i)
-   //       laplacian.images[l].data[i] = gaussian.images[l].data[i] - inter.data[i];
-   //    free(inter.data);
-   // }
-// #ifdef DEBUG
-//    for (int l = 0; l < levels; ++l) {
-//       char filename[255];
-//       snprintf(filename, sizeof(filename), "gaussian_%d.bmp", l);
-//       output_bmp(filename, &gaussian.images[l]);
-//    }
-//    for (int l = 0; l < levels; ++l) {
-//       char filename[255];
-//       snprintf(filename, sizeof(filename), "laplacian_%d.bmp", l);
-//       output_bmp(filename, &laplacian.images[l]);
-//    }
-// #endif
-   // free(image.data);
+   for (int l = 0; l < G_py->levels; ++l) {
+      char filename[255];
+      snprintf(filename, sizeof(filename), "gaussian_%d.bmp", l);
+      output_bmp(filename, G_py->images + l);
+   }
+   for (int l = 0; l < L_py->levels; ++l) {
+      char filename[255];
+      snprintf(filename, sizeof(filename), "laplacian_%d.bmp", l);
+      output_bmp(filename, L_py->images + l);
+   }
 }

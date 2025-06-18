@@ -7,7 +7,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-#define DEBUG 1
+// #define DEBUG 1
 #define MIN(x, y) ((x) > (y) ? (y) : (x))
 #define MAX(x, y) ((x) > (y) ? (y) : (x))
 
@@ -17,9 +17,11 @@ typedef struct {
    int comp;
    int size;
    float *data;
+   struct pyramid_t *G_py;
+   struct pyramid_t *L_py;
 } image_t;
 
-typedef struct {
+typedef struct pyramid_t {
    image_t *images;
    int levels;
    int type;
@@ -191,9 +193,11 @@ static void downsample(image_t *out, image_t *in)
       for (int x = 0; x < out->width; ++x) {
          int uy = 2 * y + 1;
          int ux = 2 * x + 1;
-         out->data[(y * out->width + x) * out->comp + 0] = gauss[(uy * in->width + ux) * in->comp + 0];
-         out->data[(y * out->width + x) * out->comp + 1] = gauss[(uy * in->width + ux) * in->comp + 1];
-         out->data[(y * out->width + x) * out->comp + 2] = gauss[(uy * in->width + ux) * in->comp + 2];
+         for (int c = 0; c < in->comp; ++c)
+            out->data[(y * out->width + x) * out->comp + c] = gauss[(uy * in->width + ux) * in->comp + c];
+         // out->data[(y * out->width + x) * out->comp + 0] = gauss[(uy * in->width + ux) * in->comp + 0];
+         // out->data[(y * out->width + x) * out->comp + 1] = gauss[(uy * in->width + ux) * in->comp + 1];
+         // out->data[(y * out->width + x) * out->comp + 2] = gauss[(uy * in->width + ux) * in->comp + 2];
       }
    }
    free(gauss);
@@ -289,7 +293,6 @@ static void build_pyramid(pyramid_t **out, image_t *in, int levels, int type)
          int odd_h = gaussian->images[l].height % 2;
          upsample(&inter, gaussian->images + l + 1, odd_w, odd_h);
          empty_image(laplacian->images + l, inter.width, inter.height, inter.comp);
-         printf("%d\n", laplacian->images[l].size);
          for (int i = 0; i < laplacian->images[l].size; ++i)
             laplacian->images[l].data[i] = gaussian->images[l].data[i] - inter.data[i];
          free(inter.data);
@@ -301,12 +304,12 @@ static void build_pyramid(pyramid_t **out, image_t *in, int levels, int type)
    }
 }
 
-// static void destroy_pyramid(pyramid_t *pyramid)
-// {
-//    for (int i = 0; i < pyramid->levels; ++i)
-//       free(pyramid->images[i].data);
-//    free(pyramid);
-// }
+static void destroy_pyramid(pyramid_t *pyramid)
+{
+   for (int i = 0; i < pyramid->levels; ++i)
+      free(pyramid->images[i].data);
+   free(pyramid);
+}
 
 static unsigned char saturate_cast_u8(float in)
 {
@@ -341,33 +344,34 @@ static void output_bmp(const char *filename, image_t *image)
 int main(void)
 {
    image_t images[inputs_length];
-   float *weights[inputs_length];
+   float *weights_data[inputs_length];
    for (int i = 0; i < inputs_length; ++i) {
       load_image(images + i, inputs_path[i]);
+      build_pyramid(&images[i].L_py, images + 0, 4, L_PYRAMID);
       image_t gray;
       cvt_grayscale(&gray, images + i);
-      weights[i] = malloc(sizeof(float) * gray.size);
-      calculate_weight(weights[i], images + i, &gray);
+      weights_data[i] = malloc(sizeof(float) * gray.size);
+      calculate_weight(weights_data[i], images + i, &gray);
       free(gray.data);
    }
-   normalize_weights(weights, images[0].width * images[0].height,
+   normalize_weights(weights_data, images[0].width * images[0].height,
          inputs_length);
+   image_t weights[inputs_length];
+   image_t *first = images + 0;
    for (int i = 0; i < inputs_length; ++i) {
+      weights[i].width = first->width;
+      weights[i].height = first->height;
+      weights[i].comp = 1;
+      weights[i].size = first->width * first->height;
+      weights[i].data = weights_data[i];
+      build_pyramid(&weights[i].G_py, images + 0, 4, G_PYRAMID);
+#ifdef DEBUG
       char filename[255];
       snprintf(filename, sizeof(filename), "weight_%d.bmp", i);
-      image_t weight;
-      weight.width = images[0].width;
-      weight.height = images[0].height;
-      weight.comp = 1;
-      weight.size = images[0].width * images[0].height;
-      weight.data = weights[i];
-      output_bmp(filename, &weight);
+      output_bmp(filename, weights + i);
+#endif
    }
-   pyramid_t *G_py;
-   pyramid_t *L_py;
-   build_pyramid(&G_py, images + 0, 4, G_PYRAMID);
-   build_pyramid(&L_py, images + 0, 4, L_PYRAMID);
-
+#ifdef DEBUG
    for (int l = 0; l < G_py->levels; ++l) {
       char filename[255];
       snprintf(filename, sizeof(filename), "gaussian_%d.bmp", l);
@@ -378,4 +382,5 @@ int main(void)
       snprintf(filename, sizeof(filename), "laplacian_%d.bmp", l);
       output_bmp(filename, L_py->images + l);
    }
+#endif
 }
